@@ -63,8 +63,25 @@ const EMPTY: PoiFeatureCollection = {
   features: [],
 }
 
+/** Cap query area so Overpass doesn't time out on city-wide zooms. */
+export function clampBBox(bbox: BBox, maxSpan = 0.12): BBox {
+  const latSpan = bbox.north - bbox.south
+  const lngSpan = bbox.east - bbox.west
+  const latCenter = (bbox.north + bbox.south) / 2
+  const lngCenter = (bbox.east + bbox.west) / 2
+  const halfLat = Math.min(latSpan, maxSpan) / 2
+  const halfLng = Math.min(lngSpan, maxSpan) / 2
+
+  return {
+    south: latCenter - halfLat,
+    north: latCenter + halfLat,
+    west: lngCenter - halfLng,
+    east: lngCenter + halfLng,
+  }
+}
+
 function buildQuery(bbox: BBox): string {
-  const { south, west, north, east } = bbox
+  const { south, west, north, east } = clampBBox(bbox)
   const filters = POI_KEYS.map(
     (key) => `nwr["${key}"]["name"](${south},${west},${north},${east});`,
   ).join('\n')
@@ -175,4 +192,62 @@ export async function fetchPois(
 
 export function emptyPois(): PoiFeatureCollection {
   return EMPTY
+}
+
+/** Keeps POIs across pans so empty/failed Overpass responses don't wipe the map. */
+export class PoiCache {
+  private features = new Map<string, PoiFeature>()
+
+  clear() {
+    this.features.clear()
+  }
+
+  merge(collection: PoiFeatureCollection) {
+    for (const feature of collection.features) {
+      this.features.set(feature.properties.id, feature)
+    }
+  }
+
+  prune(bbox: BBox, padRatio = 1) {
+    if (this.features.size === 0) return
+
+    const latPad = (bbox.north - bbox.south) * padRatio
+    const lngPad = (bbox.east - bbox.west) * padRatio
+    const south = bbox.south - latPad
+    const north = bbox.north + latPad
+    const west = bbox.west - lngPad
+    const east = bbox.east + lngPad
+
+    for (const [id, feature] of this.features) {
+      const [lng, lat] = feature.geometry.coordinates
+      if (lat < south || lat > north || lng < west || lng > east) {
+        this.features.delete(id)
+      }
+    }
+  }
+
+  toCollection(bbox?: BBox): PoiFeatureCollection {
+    let features = [...this.features.values()]
+
+    if (bbox) {
+      features = features.filter((feature) => {
+        const [lng, lat] = feature.geometry.coordinates
+        return (
+          lat >= bbox.south &&
+          lat <= bbox.north &&
+          lng >= bbox.west &&
+          lng <= bbox.east
+        )
+      })
+    }
+
+    return {
+      type: 'FeatureCollection',
+      features,
+    }
+  }
+
+  get size() {
+    return this.features.size
+  }
 }

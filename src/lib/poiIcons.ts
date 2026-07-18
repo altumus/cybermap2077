@@ -177,6 +177,13 @@ function loadSvgImage(svg: string): Promise<HTMLImageElement> {
   })
 }
 
+const LABEL_BG_SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <rect x="1" y="1" width="30" height="30" rx="2" fill="#182533" fill-opacity="0.92" stroke="#4B95B9" stroke-opacity="0.45" stroke-width="1.5"/>
+</svg>`.trim()
+
+export const POI_LABEL_BG_ID = 'poi-label-bg'
+
 export async function registerPoiIcons(map: MapLibreMap): Promise<void> {
   await Promise.all(
     POI_ICON_IDS.map(async (id) => {
@@ -186,4 +193,15 @@ export async function registerPoiIcons(map: MapLibreMap): Promise<void> {
       map.addImage(imageId, image, { pixelRatio: 2 })
     }),
   )
+
+  if (!map.hasImage(POI_LABEL_BG_ID)) {
+    const image = await loadSvgImage(LABEL_BG_SVG)
+    // 9-slice stretch so the plate grows with label text
+    map.addImage(POI_LABEL_BG_ID, image, {
+      pixelRatio: 2,
+      content: [6, 6, 26, 26],
+      stretchX: [[6, 26]],
+      stretchY: [[6, 26]],
+    })
+  }
 }

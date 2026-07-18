@@ -3,13 +3,18 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
-  useState,
   type MutableRefObject,
 } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { registerPoiIcons } from '../lib/poiIcons'
-import { emptyPois, fetchPois, type PoiFeatureCollection } from '../lib/pois'
+import { POI_LABEL_BG_ID, registerPoiIcons } from '../lib/poiIcons'
+import {
+  emptyPois,
+  fetchPois,
+  PoiCache,
+  type BBox,
+  type PoiFeatureCollection,
+} from '../lib/pois'
 import {
   EMPTY_ROUTE,
   fetchRoute,
@@ -26,8 +31,16 @@ const MAP_STYLE = '/styles/cyberpunk.json'
 const DEFAULT_CENTER: [number, number] = [-118.2437, 34.0522]
 const DEFAULT_ZOOM = 11
 const FOCUS_ZOOM = 15
-const POI_MIN_ZOOM = 10
-const POI_DEBOUNCE_MS = 700
+/**
+ * Google Maps–like POI visibility:
+ * icons + labels appear together around neighborhood zoom (~14).
+ */
+const POI_FETCH_MIN_ZOOM = 14
+/** Fully transparent at/below; fade in until POI_FADE_IN_ZOOM */
+const POI_FADE_OUT_ZOOM = 13
+const POI_FADE_IN_ZOOM = 14
+const POI_LABEL_HALO = '#182533'
+const POI_DEBOUNCE_MS = 900
 const POI_SOURCE = 'pois'
 const POI_ICONS = 'pois-icons'
 const POI_LABELS = 'pois-labels'
@@ -60,8 +73,6 @@ type MapProps = {
     destinationLabel: string | null
   }) => void
 }
-
-type PoiStatus = 'idle' | 'loading' | 'zoom-in' | 'error'
 
 function escapeHtml(value: string): string {
   return value
@@ -108,32 +119,56 @@ function createRouteMarkerElement(label: string, color: string): HTMLDivElement 
 async function ensurePoiLayers(map: maplibregl.Map) {
   if (map.getSource(POI_SOURCE)) return
 
-  await registerPoiIcons(map)
+  try {
+    await registerPoiIcons(map)
+  } catch {
+    // Continue with layers even if some icons fail to register
+  }
 
   map.addSource(POI_SOURCE, {
     type: 'geojson',
     data: emptyPois(),
   })
 
+  const poiFadeOpacity = [
+    'interpolate',
+    ['linear'],
+    ['zoom'],
+    POI_FADE_OUT_ZOOM,
+    0,
+    POI_FADE_IN_ZOOM,
+    1,
+  ] as unknown as maplibregl.ExpressionSpecification
+
   map.addLayer({
     id: POI_ICONS,
     type: 'symbol',
     source: POI_SOURCE,
+    minzoom: POI_FADE_OUT_ZOOM,
     layout: {
-      'icon-image': ['concat', 'poi-', ['get', 'icon']],
+      'icon-image': [
+        'concat',
+        'poi-',
+        ['coalesce', ['get', 'icon'], 'default'],
+      ],
       'icon-size': [
         'interpolate',
         ['linear'],
         ['zoom'],
-        10,
-        0.9,
-        14,
-        1.15,
+        POI_FADE_OUT_ZOOM,
+        0.7,
+        POI_FADE_IN_ZOOM,
+        1.05,
+        16,
+        1.25,
         18,
         1.4,
       ],
       'icon-allow-overlap': true,
       'icon-ignore-placement': true,
+    },
+    paint: {
+      'icon-opacity': poiFadeOpacity,
     },
   })
 
@@ -141,20 +176,28 @@ async function ensurePoiLayers(map: maplibregl.Map) {
     id: POI_LABELS,
     type: 'symbol',
     source: POI_SOURCE,
-    minzoom: 15,
+    minzoom: POI_FADE_OUT_ZOOM,
     layout: {
+      'icon-image': POI_LABEL_BG_ID,
+      'icon-text-fit': 'both',
+      'icon-text-fit-padding': [4, 7, 4, 7],
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
       'text-field': ['get', 'name'],
       'text-font': ['Noto Sans Regular'],
       'text-size': 11,
-      'text-offset': [0, 2],
+      'text-offset': [0, 1.9],
       'text-anchor': 'top',
       'text-max-width': 10,
       'text-optional': true,
+      'text-allow-overlap': false,
     },
     paint: {
       'text-color': '#fcee0a',
-      'text-halo-color': '#0a0a0a',
-      'text-halo-width': 1.5,
+      'text-halo-color': POI_LABEL_HALO,
+      'text-halo-width': 0.5,
+      'icon-opacity': poiFadeOpacity,
+      'text-opacity': poiFadeOpacity,
     },
   })
 }
@@ -208,8 +251,9 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
   const originMarkerRef = useRef<maplibregl.Marker | null>(null)
   const destinationMarkerRef = useRef<maplibregl.Marker | null>(null)
   const popupRef = useRef<maplibregl.Popup | null>(null)
-  const abortRef = useRef<AbortController | null>(null)
   const routeAbortRef = useRef<AbortController | null>(null)
+  const suppressPoiReloadRef = useRef(false)
+  const poiCacheRef = useRef(new PoiCache())
 
   const stepRef = useRef<RoutePickStep>('idle')
   const statusRef = useRef<RouteUiStatus>('idle')
@@ -221,8 +265,6 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
   const summaryRef = useRef<string | null>(null)
   const onRouteStateChangeRef = useRef(onRouteStateChange)
   onRouteStateChangeRef.current = onRouteStateChange
-
-  const [poiStatus, setPoiStatus] = useState<PoiStatus>('zoom-in')
 
   function emitRouteState() {
     onRouteStateChangeRef.current?.({
@@ -298,7 +340,11 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
       for (const coord of route.geometry.coordinates) {
         bounds.extend(coord as [number, number])
       }
+      suppressPoiReloadRef.current = true
       map.fitBounds(bounds, { padding: 80, maxZoom: 16, duration: 800 })
+      window.setTimeout(() => {
+        suppressPoiReloadRef.current = false
+      }, 1000)
     } catch (error) {
       if (
         controller.signal.aborted ||
@@ -451,52 +497,81 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
 
     let debounceTimer: number | undefined
     let requestId = 0
+    let poisReady = false
+    const poiCache = poiCacheRef.current
+
+    function boundsToBBox(): BBox {
+      const bounds = map.getBounds()
+      return {
+        south: bounds.getSouth(),
+        west: bounds.getWest(),
+        north: bounds.getNorth(),
+        east: bounds.getEast(),
+      }
+    }
+
+    function paintCachedPois(bbox: BBox) {
+      // Show cache with padding so icons don't vanish at edges while panning
+      const latPad = (bbox.north - bbox.south) * 0.25
+      const lngPad = (bbox.east - bbox.west) * 0.25
+      setPoiData(
+        map,
+        poiCache.toCollection({
+          south: bbox.south - latPad,
+          north: bbox.north + latPad,
+          west: bbox.west - lngPad,
+          east: bbox.east + lngPad,
+        }),
+      )
+    }
 
     async function loadPois() {
-      if (!map.getSource(POI_SOURCE)) return
+      if (!poisReady || !map.getSource(POI_SOURCE)) return
+      if (suppressPoiReloadRef.current) return
 
       const zoom = map.getZoom()
-      if (zoom < POI_MIN_ZOOM) {
-        setPoiData(map, emptyPois())
-        setPoiStatus('zoom-in')
+      const bbox = boundsToBBox()
+
+      // Keep cached icons for opacity fade; only drop data far below fade range
+      if (zoom < POI_FADE_OUT_ZOOM) {
+        if (poiCache.size > 0) {
+          poiCache.clear()
+          setPoiData(map, emptyPois())
+        }
+        return
+      }
+
+      // Still paint cache while zoomed out (icons fade via style opacity)
+      if (poiCache.size > 0) {
+        paintCachedPois(bbox)
+      }
+
+      if (zoom < POI_FETCH_MIN_ZOOM) {
         return
       }
 
       const currentRequest = ++requestId
-      abortRef.current?.abort()
-      const controller = new AbortController()
-      abortRef.current = controller
-
-      const bounds = map.getBounds()
-      setPoiStatus('loading')
 
       try {
-        const data = await fetchPois(
-          {
-            south: bounds.getSouth(),
-            west: bounds.getWest(),
-            north: bounds.getNorth(),
-            east: bounds.getEast(),
-          },
-          controller.signal,
-        )
+        // Do not abort previous requests — Overpass is slow; aborting caused empty maps
+        const data = await fetchPois(bbox)
 
-        if (currentRequest !== requestId || controller.signal.aborted) return
-        setPoiData(map, data)
-        setPoiStatus('idle')
-      } catch (error) {
-        if (
-          currentRequest !== requestId ||
-          controller.signal.aborted ||
-          (error as Error).name === 'AbortError'
-        ) {
-          return
+        if (currentRequest !== requestId) return
+
+        if (data.features.length > 0) {
+          poiCache.merge(data)
+          poiCache.prune(bbox, 2)
         }
-        setPoiStatus('error')
+
+        paintCachedPois(bbox)
+      } catch {
+        if (currentRequest !== requestId) return
+        paintCachedPois(bbox)
       }
     }
 
     function schedulePoiLoad() {
+      if (!poisReady || suppressPoiReloadRef.current) return
       window.clearTimeout(debounceTimer)
       debounceTimer = window.setTimeout(() => {
         void loadPois()
@@ -506,7 +581,8 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
     map.on('load', () => {
       ensureRouteLayers(map)
       void ensurePoiLayers(map).then(() => {
-        schedulePoiLoad()
+        poisReady = true
+        void loadPois()
       })
     })
 
@@ -578,8 +654,8 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
 
     return () => {
       window.clearTimeout(debounceTimer)
-      abortRef.current?.abort()
       routeAbortRef.current?.abort()
+      poiCache.clear()
       popup.remove()
       popupRef.current = null
       searchMarkerRef.current?.remove()
@@ -595,15 +671,6 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const statusLabel =
-    poiStatus === 'loading'
-      ? 'Scanning sector...'
-      : poiStatus === 'zoom-in'
-        ? 'Zoom in for POI'
-        : poiStatus === 'error'
-          ? 'POI unavailable'
-          : null
-
   return (
     <div className="relative h-full w-full">
       <div
@@ -611,18 +678,6 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
         className="h-full w-full [&_.maplibregl-ctrl-group]:overflow-hidden [&_.maplibregl-ctrl-group]:border [&_.maplibregl-ctrl-group]:border-cp-yellow/30 [&_.maplibregl-ctrl-group]:bg-cp-panel/90 [&_.maplibregl-ctrl-group]:shadow-none [&_.maplibregl-ctrl-group_button]:bg-transparent [&_.maplibregl-ctrl-attrib]:bg-cp-panel/70 [&_.maplibregl-ctrl-attrib]:text-[10px] [&_.maplibregl-ctrl-attrib]:text-cp-muted"
         aria-label="Night City map"
       />
-
-      {statusLabel && (
-        <p
-          className={`pointer-events-none absolute bottom-8 left-1/2 z-10 -translate-x-1/2 border px-3 py-1.5 font-display text-[10px] tracking-[0.25em] uppercase backdrop-blur-sm ${
-            poiStatus === 'error'
-              ? 'border-cp-magenta/40 bg-cp-panel/90 text-cp-magenta'
-              : 'border-cp-cyan/40 bg-cp-panel/90 text-cp-cyan'
-          }`}
-        >
-          {statusLabel}
-        </p>
-      )}
     </div>
   )
 })
