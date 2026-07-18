@@ -1,6 +1,7 @@
 import type { Map as MapLibreMap } from 'maplibre-gl'
+import type { PoiIconId } from '../types'
 
-export const POI_ICON_IDS = [
+export const POI_ICON_IDS: readonly PoiIconId[] = [
   'food',
   'drink',
   'clothes',
@@ -11,9 +12,7 @@ export const POI_ICON_IDS = [
   'office',
   'craft',
   'default',
-] as const
-
-export type PoiIconId = (typeof POI_ICON_IDS)[number]
+]
 
 const FOOD_TYPES = new Set([
   'restaurant',

@@ -5,7 +5,8 @@ import {
   useState,
   type KeyboardEvent,
 } from 'react'
-import { searchAddresses, type GeocodeResult } from '../lib/geocode'
+import { searchAddresses } from '../lib/geocode'
+import type { GeocodeResult } from '../types'
 
 type AddressSearchProps = {
   onSelect: (result: GeocodeResult) => void

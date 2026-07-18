@@ -1,9 +1,4 @@
-export type GeocodeResult = {
-  id: string
-  label: string
-  lat: number
-  lng: number
-}
+import type { GeocodeResult } from '../types'
 
 type NominatimItem = {
   place_id: number

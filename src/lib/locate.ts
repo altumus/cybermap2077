@@ -1,7 +1,4 @@
-export type LatLng = {
-  lat: number
-  lng: number
-}
+import type { LatLng } from '../types'
 
 export async function locateUser(): Promise<LatLng> {
   const response = await fetch('https://ipwho.is/')
@@ -27,8 +24,4 @@ export async function locateUser(): Promise<LatLng> {
     lat: data.latitude,
     lng: data.longitude,
   }
-}
-
-export function locateErrorMessage(): string {
-  return 'Could not determine location'
 }

@@ -1,14 +1,4 @@
-export type LatLng = {
-  lng: number
-  lat: number
-}
-
-export type RouteProfile = 'driving' | 'foot'
-
-export type LineStringGeometry = {
-  type: 'LineString'
-  coordinates: [number, number][]
-}
+import type { LatLng, LineStringGeometry, RouteProfile } from '../types'
 
 export type RouteResult = {
   geometry: LineStringGeometry
@@ -34,7 +24,7 @@ type OsrmResponse = {
   }>
 }
 
-/** FOSSGIS OSRM — separate car/foot graphs (public demo ignores profile). */
+/** FOSSGIS OSRM — separate car/foot graphs. */
 const OSRM_ENDPOINTS: Record<RouteProfile, string> = {
   driving: 'https://routing.openstreetmap.de/routed-car/route/v1/driving',
   foot: 'https://routing.openstreetmap.de/routed-foot/route/v1/driving',
@@ -58,19 +48,6 @@ export function routeToFeatureCollection(
       },
     ],
   }
-}
-
-export function formatDistance(meters: number): string {
-  if (meters < 1000) return `${Math.round(meters)} m`
-  return `${(meters / 1000).toFixed(1)} km`
-}
-
-export function formatDuration(seconds: number): string {
-  const totalMinutes = Math.round(seconds / 60)
-  if (totalMinutes < 60) return `${totalMinutes} min`
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
-  return minutes === 0 ? `${hours} h` : `${hours} h ${minutes} min`
 }
 
 export async function fetchRoute(

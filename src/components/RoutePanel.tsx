@@ -1,55 +1,24 @@
 import { useState } from 'react'
+import { routeActions } from '../flux/actions'
+import { useRouteStore } from '../flux/useRouteStore'
+import type {
+  GeocodeResult,
+  RoutePickStep,
+  RouteProfile,
+  RouteUiStatus,
+} from '../types'
 import { AddressSearch } from './AddressSearch'
-import type { GeocodeResult } from '../lib/geocode'
-import type { RouteProfile } from '../lib/routing'
 
-export type RoutePickStep = 'idle' | 'origin' | 'destination'
-export type RouteUiStatus = 'idle' | 'loading' | 'ready' | 'error'
-
-type RoutePanelProps = {
-  step: RoutePickStep
-  status: RouteUiStatus
-  profile: RouteProfile
-  summary: string | null
-  originLabel: string
-  destinationLabel: string
-  onOriginLabelChange: (value: string) => void
-  onDestinationLabelChange: (value: string) => void
-  onOriginSelect: (result: GeocodeResult) => void
-  onDestinationSelect: (result: GeocodeResult) => void
-  onStart: () => void
-  onClear: () => void
-  onProfileChange: (profile: RouteProfile) => void
-}
-
-export function RoutePanel({
-  step,
-  status,
-  profile,
-  summary,
-  originLabel,
-  destinationLabel,
-  onOriginLabelChange,
-  onDestinationLabelChange,
-  onOriginSelect,
-  onDestinationSelect,
-  onStart,
-  onClear,
-  onProfileChange,
-}: RoutePanelProps) {
+export function RoutePanel() {
+  const step = useRouteStore((s) => s.step)
+  const status = useRouteStore((s) => s.status)
+  const profile = useRouteStore((s) => s.profile)
+  const summary = useRouteStore((s) => s.summary)
+  const originLabel = useRouteStore((s) => s.originLabel)
+  const destinationLabel = useRouteStore((s) => s.destinationLabel)
   const [expanded, setExpanded] = useState(true)
 
-  const hint =
-    step === 'origin'
-      ? 'Click map or type start address'
-      : step === 'destination'
-        ? 'Click map or type end address'
-        : status === 'loading'
-          ? 'Calculating route...'
-          : status === 'error'
-            ? 'Route unavailable'
-            : summary
-
+  const hint = routeHint(step, status, summary)
   const active = step !== 'idle' || status === 'ready' || status === 'loading'
   const collapsedHint =
     status === 'loading'
@@ -57,6 +26,14 @@ export function RoutePanel({
       : status === 'error'
         ? 'Route unavailable'
         : summary
+
+  function onSelect(role: 'origin' | 'destination', result: GeocodeResult) {
+    routeActions.setEndpoint(
+      role,
+      { lng: result.lng, lat: result.lat },
+      result.label,
+    )
+  }
 
   return (
     <div className="pointer-events-auto flex w-full max-w-md flex-col border border-cp-cyan/30 bg-cp-panel/90 backdrop-blur-sm md:max-w-sm">
@@ -94,11 +71,11 @@ export function RoutePanel({
       {expanded && (
         <div className="flex flex-col gap-2 border-t border-cp-cyan/20 px-3 pt-2 pb-3">
           <div className="flex justify-end gap-1">
-            {(['driving', 'foot'] as const).map((option) => (
+            {(['driving', 'foot'] as const).map((option: RouteProfile) => (
               <button
                 key={option}
                 type="button"
-                onClick={() => onProfileChange(option)}
+                onClick={() => routeActions.setProfile(option)}
                 className={`px-2 py-0.5 font-display text-[10px] tracking-wider uppercase ${
                   profile === option
                     ? 'bg-cp-yellow/20 text-cp-yellow'
@@ -114,30 +91,32 @@ export function RoutePanel({
             label="A"
             placeholder="Start address..."
             value={originLabel}
-            onValueChange={onOriginLabelChange}
-            onSelect={onOriginSelect}
+            onValueChange={(label) => routeActions.setLabel('origin', label)}
+            onSelect={(result) => onSelect('origin', result)}
             inputId="route-origin"
           />
           <AddressSearch
             label="B"
             placeholder="End address..."
             value={destinationLabel}
-            onValueChange={onDestinationLabelChange}
-            onSelect={onDestinationSelect}
+            onValueChange={(label) =>
+              routeActions.setLabel('destination', label)
+            }
+            onSelect={(result) => onSelect('destination', result)}
             inputId="route-destination"
           />
 
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={onStart}
+              onClick={() => routeActions.beginRoutePick()}
               className="flex-1 border border-cp-yellow/40 px-3 py-2 font-display text-xs tracking-[0.2em] text-cp-yellow uppercase transition-colors hover:bg-cp-yellow/10"
             >
               Pick on map
             </button>
             <button
               type="button"
-              onClick={onClear}
+              onClick={() => routeActions.clearRoute()}
               disabled={
                 !active && status === 'idle' && !originLabel && !destinationLabel
               }
@@ -160,4 +139,16 @@ export function RoutePanel({
       )}
     </div>
   )
+}
+
+function routeHint(
+  step: RoutePickStep,
+  status: RouteUiStatus,
+  summary: string | null,
+): string | null {
+  if (step === 'origin') return 'Click map or type start address'
+  if (step === 'destination') return 'Click map or type end address'
+  if (status === 'loading') return 'Calculating route...'
+  if (status === 'error') return 'Route unavailable'
+  return summary
 }

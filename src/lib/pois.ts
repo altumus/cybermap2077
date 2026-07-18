@@ -1,33 +1,10 @@
-import { resolvePoiIcon, type PoiIconId } from './poiIcons'
-
-export type BBox = {
-  south: number
-  west: number
-  north: number
-  east: number
-}
-
-export type PoiProperties = {
-  id: string
-  name: string
-  category: string
-  type: string
-  icon: PoiIconId
-}
-
-export type PoiFeature = {
-  type: 'Feature'
-  geometry: {
-    type: 'Point'
-    coordinates: [number, number]
-  }
-  properties: PoiProperties
-}
-
-export type PoiFeatureCollection = {
-  type: 'FeatureCollection'
-  features: PoiFeature[]
-}
+import type {
+  BBox,
+  PoiFeature,
+  PoiFeatureCollection,
+} from '../types'
+import { clampBBox } from '../utils/bbox'
+import { resolvePoiIcon } from './poiIcons'
 
 type OverpassElement = {
   type: 'node' | 'way' | 'relation'
@@ -42,11 +19,7 @@ type OverpassResponse = {
   elements?: OverpassElement[]
 }
 
-/** Mirrors that allow browser CORS (overpass-api.de returns 406 with Origin). */
-const OVERPASS_ENDPOINTS = [
-  'https://overpass.openstreetmap.fr/api/interpreter',
-  'https://overpass.osm.ch/api/interpreter',
-]
+const OVERPASS_URL = 'https://overpass.openstreetmap.fr/api/interpreter'
 
 const POI_KEYS = [
   'amenity',
@@ -61,23 +34,6 @@ const POI_KEYS = [
 const EMPTY: PoiFeatureCollection = {
   type: 'FeatureCollection',
   features: [],
-}
-
-/** Cap query area so Overpass doesn't time out on city-wide zooms. */
-export function clampBBox(bbox: BBox, maxSpan = 0.12): BBox {
-  const latSpan = bbox.north - bbox.south
-  const lngSpan = bbox.east - bbox.west
-  const latCenter = (bbox.north + bbox.south) / 2
-  const lngCenter = (bbox.east + bbox.west) / 2
-  const halfLat = Math.min(latSpan, maxSpan) / 2
-  const halfLng = Math.min(lngSpan, maxSpan) / 2
-
-  return {
-    south: latCenter - halfLat,
-    north: latCenter + halfLat,
-    west: lngCenter - halfLng,
-    east: lngCenter + halfLng,
-  }
 }
 
 function buildQuery(bbox: BBox): string {
@@ -145,17 +101,16 @@ function toCollection(data: OverpassResponse): PoiFeatureCollection {
   }
 }
 
-async function queryEndpoint(
-  endpoint: string,
-  query: string,
+export async function fetchPois(
+  bbox: BBox,
   signal?: AbortSignal,
 ): Promise<PoiFeatureCollection> {
-  const response = await fetch(endpoint, {
+  const response = await fetch(OVERPASS_URL, {
     method: 'POST',
     headers: {
       Accept: 'application/json',
     },
-    body: new URLSearchParams({ data: query }),
+    body: new URLSearchParams({ data: buildQuery(bbox) }),
     signal,
   })
 
@@ -165,29 +120,6 @@ async function queryEndpoint(
 
   const data = (await response.json()) as OverpassResponse
   return toCollection(data)
-}
-
-export async function fetchPois(
-  bbox: BBox,
-  signal?: AbortSignal,
-): Promise<PoiFeatureCollection> {
-  const query = buildQuery(bbox)
-  let lastError: unknown
-
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-
-    try {
-      return await queryEndpoint(endpoint, query, signal)
-    } catch (error) {
-      if (signal?.aborted || (error as Error).name === 'AbortError') {
-        throw new DOMException('Aborted', 'AbortError')
-      }
-      lastError = error
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error('POI fetch failed')
 }
 
 export function emptyPois(): PoiFeatureCollection {

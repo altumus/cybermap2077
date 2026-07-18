@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { locateErrorMessage, locateUser } from '../lib/locate'
+import { locateUser } from '../lib/locate'
 
 type LocateButtonProps = {
   onLocate: (lng: number, lat: number) => void
@@ -21,7 +21,7 @@ export function LocateButton({ onLocate }: LocateButtonProps) {
       onLocate(position.lng, position.lat)
     } catch {
       setStatus('error')
-      setErrorMessage(locateErrorMessage())
+      setErrorMessage('Could not determine location')
       window.setTimeout(() => {
         setStatus('idle')
         setErrorMessage(null)

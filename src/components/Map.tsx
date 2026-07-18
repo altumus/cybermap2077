@@ -1,42 +1,20 @@
-import {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-  type MutableRefObject,
-} from 'react'
+import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import { routeActions } from '../flux/actions'
+import { getRouteState } from '../flux/routeStore'
+import { useRouteStore } from '../flux/useRouteStore'
 import { POI_LABEL_BG_ID, registerPoiIcons } from '../lib/poiIcons'
-import {
-  emptyPois,
-  fetchPois,
-  PoiCache,
-  type BBox,
-  type PoiFeatureCollection,
-} from '../lib/pois'
-import {
-  EMPTY_ROUTE,
-  fetchRoute,
-  formatDistance,
-  formatDuration,
-  routeToFeatureCollection,
-  type LatLng,
-  type RouteProfile,
-} from '../lib/routing'
+import { emptyPois, fetchPois, PoiCache } from '../lib/pois'
+import { EMPTY_ROUTE, routeToFeatureCollection } from '../lib/routing'
+import type { BBox, LatLng, PoiFeatureCollection } from '../types'
+import { escapeHtml } from '../utils/html'
 
-/** Local cyberpunk theme — tiles/fonts still from OpenFreeMap */
 const MAP_STYLE = '/styles/cyberpunk.json'
-
 const DEFAULT_CENTER: [number, number] = [-118.2437, 34.0522]
 const DEFAULT_ZOOM = 11
 const FOCUS_ZOOM = 15
-/**
- * Google Maps–like POI visibility:
- * icons + labels appear together around neighborhood zoom (~14).
- */
 const POI_FETCH_MIN_ZOOM = 14
-/** Fully transparent at/below; fade in until POI_FADE_IN_ZOOM */
 const POI_FADE_OUT_ZOOM = 13
 const POI_FADE_IN_ZOOM = 14
 const POI_LABEL_HALO = '#182533'
@@ -47,40 +25,6 @@ const POI_LABELS = 'pois-labels'
 const ROUTE_SOURCE = 'route'
 const ROUTE_LAYER = 'route-line'
 const ROUTE_GLOW_LAYER = 'route-glow'
-
-export type RoutePickStep = 'idle' | 'origin' | 'destination'
-export type RouteUiStatus = 'idle' | 'loading' | 'ready' | 'error'
-
-export type MapHandle = {
-  flyTo: (lng: number, lat: number, zoom?: number) => void
-  beginRoutePick: () => void
-  clearRoute: () => void
-  setRouteProfile: (profile: RouteProfile) => void
-  setRouteEndpoint: (
-    role: 'origin' | 'destination',
-    point: LatLng,
-    label?: string,
-  ) => void
-}
-
-type MapProps = {
-  onRouteStateChange?: (state: {
-    step: RoutePickStep
-    status: RouteUiStatus
-    profile: RouteProfile
-    summary: string | null
-    originLabel: string | null
-    destinationLabel: string | null
-  }) => void
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-}
 
 function setPoiData(map: maplibregl.Map, data: PoiFeatureCollection) {
   const source = map.getSource(POI_SOURCE) as maplibregl.GeoJSONSource | undefined
@@ -122,7 +66,7 @@ async function ensurePoiLayers(map: maplibregl.Map) {
   try {
     await registerPoiIcons(map)
   } catch {
-    // Continue with layers even if some icons fail to register
+    // Continue even if some icons fail
   }
 
   map.addSource(POI_SOURCE, {
@@ -214,10 +158,7 @@ function ensureRouteLayers(map: maplibregl.Map) {
     id: ROUTE_GLOW_LAYER,
     type: 'line',
     source: ROUTE_SOURCE,
-    layout: {
-      'line-join': 'round',
-      'line-cap': 'round',
-    },
+    layout: { 'line-join': 'round', 'line-cap': 'round' },
     paint: {
       'line-color': '#00f0ff',
       'line-width': 10,
@@ -229,10 +170,7 @@ function ensureRouteLayers(map: maplibregl.Map) {
     id: ROUTE_LAYER,
     type: 'line',
     source: ROUTE_SOURCE,
-    layout: {
-      'line-join': 'round',
-      'line-cap': 'round',
-    },
+    layout: { 'line-join': 'round', 'line-cap': 'round' },
     paint: {
       'line-color': '#fcee0a',
       'line-width': 4,
@@ -241,231 +179,52 @@ function ensureRouteLayers(map: maplibregl.Map) {
   })
 }
 
-export const Map = forwardRef<MapHandle, MapProps>(function Map(
-  { onRouteStateChange },
-  ref,
+function syncMarker(
+  map: maplibregl.Map,
+  markerRef: { current: maplibregl.Marker | null },
+  point: LatLng | null,
+  label: string,
+  color: string,
 ) {
+  if (!point) {
+    markerRef.current?.remove()
+    markerRef.current = null
+    return
+  }
+
+  if (!markerRef.current) {
+    markerRef.current = new maplibregl.Marker({
+      element: createRouteMarkerElement(label, color),
+      anchor: 'center',
+    })
+      .setLngLat([point.lng, point.lat])
+      .addTo(map)
+  } else {
+    markerRef.current.setLngLat([point.lng, point.lat])
+  }
+}
+
+export function Map() {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const searchMarkerRef = useRef<maplibregl.Marker | null>(null)
   const originMarkerRef = useRef<maplibregl.Marker | null>(null)
   const destinationMarkerRef = useRef<maplibregl.Marker | null>(null)
   const popupRef = useRef<maplibregl.Popup | null>(null)
-  const routeAbortRef = useRef<AbortController | null>(null)
   const suppressPoiReloadRef = useRef(false)
   const poiCacheRef = useRef(new PoiCache())
+  const stepRef = useRef(getRouteState().step)
+  const [mapReady, setMapReady] = useState(false)
 
-  const stepRef = useRef<RoutePickStep>('idle')
-  const statusRef = useRef<RouteUiStatus>('idle')
-  const profileRef = useRef<RouteProfile>('driving')
-  const originRef = useRef<LatLng | null>(null)
-  const destinationRef = useRef<LatLng | null>(null)
-  const originLabelRef = useRef<string | null>(null)
-  const destinationLabelRef = useRef<string | null>(null)
-  const summaryRef = useRef<string | null>(null)
-  const onRouteStateChangeRef = useRef(onRouteStateChange)
-  onRouteStateChangeRef.current = onRouteStateChange
+  const origin = useRouteStore((s) => s.origin)
+  const destination = useRouteStore((s) => s.destination)
+  const routeGeometry = useRouteStore((s) => s.routeGeometry)
+  const step = useRouteStore((s) => s.step)
+  const cameraIntent = useRouteStore((s) => s.cameraIntent)
 
-  function emitRouteState() {
-    onRouteStateChangeRef.current?.({
-      step: stepRef.current,
-      status: statusRef.current,
-      profile: profileRef.current,
-      summary: summaryRef.current,
-      originLabel: originLabelRef.current,
-      destinationLabel: destinationLabelRef.current,
-    })
-  }
+  stepRef.current = step
 
-  function formatPinLabel(point: LatLng): string {
-    return `${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}`
-  }
-
-  function upsertMarker(
-    markerRef: MutableRefObject<maplibregl.Marker | null>,
-    point: LatLng,
-    label: string,
-    color: string,
-  ) {
-    const map = mapRef.current
-    if (!map) return
-
-    if (!markerRef.current) {
-      markerRef.current = new maplibregl.Marker({
-        element: createRouteMarkerElement(label, color),
-        anchor: 'center',
-      })
-        .setLngLat([point.lng, point.lat])
-        .addTo(map)
-    } else {
-      markerRef.current.setLngLat([point.lng, point.lat])
-    }
-  }
-
-  async function calculateRoute() {
-    const map = mapRef.current
-    const origin = originRef.current
-    const destination = destinationRef.current
-    if (!map || !origin || !destination) return
-
-    routeAbortRef.current?.abort()
-    const controller = new AbortController()
-    routeAbortRef.current = controller
-
-    statusRef.current = 'loading'
-    summaryRef.current = null
-    emitRouteState()
-
-    try {
-      const route = await fetchRoute(
-        origin,
-        destination,
-        profileRef.current,
-        controller.signal,
-      )
-
-      if (controller.signal.aborted) return
-
-      setRouteData(map, routeToFeatureCollection(route.geometry))
-      const modeLabel = profileRef.current === 'foot' ? 'Walk' : 'Drive'
-      summaryRef.current = `${modeLabel} · ${formatDistance(route.distanceMeters)} · ${formatDuration(route.durationSeconds)}`
-      statusRef.current = 'ready'
-      stepRef.current = 'idle'
-      emitRouteState()
-
-      const bounds = new maplibregl.LngLatBounds(
-        [origin.lng, origin.lat],
-        [destination.lng, destination.lat],
-      )
-      for (const coord of route.geometry.coordinates) {
-        bounds.extend(coord as [number, number])
-      }
-      suppressPoiReloadRef.current = true
-      map.fitBounds(bounds, { padding: 80, maxZoom: 16, duration: 800 })
-      window.setTimeout(() => {
-        suppressPoiReloadRef.current = false
-      }, 1000)
-    } catch (error) {
-      if (
-        controller.signal.aborted ||
-        (error as Error).name === 'AbortError'
-      ) {
-        return
-      }
-      statusRef.current = 'error'
-      summaryRef.current = null
-      emitRouteState()
-    }
-  }
-
-  function setRouteEndpoint(
-    role: 'origin' | 'destination',
-    point: LatLng,
-    label?: string,
-  ) {
-    const map = mapRef.current
-    if (!map) return
-
-    const resolvedLabel = label?.trim() || formatPinLabel(point)
-
-    if (role === 'origin') {
-      originRef.current = point
-      originLabelRef.current = resolvedLabel
-      upsertMarker(originMarkerRef, point, 'A', '#00f0ff')
-    } else {
-      destinationRef.current = point
-      destinationLabelRef.current = resolvedLabel
-      upsertMarker(destinationMarkerRef, point, 'B', '#fcee0a')
-    }
-
-    summaryRef.current = null
-    map.getCanvas().style.removeProperty('cursor')
-
-    if (originRef.current && destinationRef.current) {
-      stepRef.current = 'idle'
-      void calculateRoute()
-      return
-    }
-
-    stepRef.current = originRef.current ? 'destination' : 'origin'
-    statusRef.current = 'idle'
-    emitRouteState()
-  }
-
-  function placeRoutePoint(point: LatLng) {
-    if (stepRef.current === 'idle') return
-
-    if (stepRef.current === 'origin') {
-      setRouteEndpoint('origin', point)
-      if (!destinationRef.current) {
-        mapRef.current?.getCanvas().style.setProperty('cursor', 'crosshair')
-      }
-      return
-    }
-
-    setRouteEndpoint('destination', point)
-  }
-
-  function clearRoute() {
-    const map = mapRef.current
-    routeAbortRef.current?.abort()
-    originRef.current = null
-    destinationRef.current = null
-    originLabelRef.current = null
-    destinationLabelRef.current = null
-    stepRef.current = 'idle'
-    statusRef.current = 'idle'
-    summaryRef.current = null
-    originMarkerRef.current?.remove()
-    originMarkerRef.current = null
-    destinationMarkerRef.current?.remove()
-    destinationMarkerRef.current = null
-    if (map) setRouteData(map, EMPTY_ROUTE)
-    map?.getCanvas().style.removeProperty('cursor')
-    emitRouteState()
-  }
-
-  useImperativeHandle(ref, () => ({
-    flyTo(lng, lat, zoom = FOCUS_ZOOM) {
-      const map = mapRef.current
-      if (!map) return
-
-      if (!searchMarkerRef.current) {
-        searchMarkerRef.current = new maplibregl.Marker({ color: '#fcee0a' })
-          .setLngLat([lng, lat])
-          .addTo(map)
-      } else {
-        searchMarkerRef.current.setLngLat([lng, lat])
-      }
-
-      map.flyTo({
-        center: [lng, lat],
-        zoom,
-        essential: true,
-      })
-    },
-    beginRoutePick() {
-      clearRoute()
-      stepRef.current = 'origin'
-      statusRef.current = 'idle'
-      emitRouteState()
-      mapRef.current?.getCanvas().style.setProperty('cursor', 'crosshair')
-    },
-    clearRoute() {
-      clearRoute()
-    },
-    setRouteProfile(profile) {
-      profileRef.current = profile
-      emitRouteState()
-      if (originRef.current && destinationRef.current) {
-        void calculateRoute()
-      }
-    },
-    setRouteEndpoint(role, point, label) {
-      setRouteEndpoint(role, point, label)
-    },
-  }))
-
+  // MapLibre init + POI controller
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
 
@@ -511,7 +270,6 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
     }
 
     function paintCachedPois(bbox: BBox) {
-      // Show cache with padding so icons don't vanish at edges while panning
       const latPad = (bbox.north - bbox.south) * 0.25
       const lngPad = (bbox.east - bbox.west) * 0.25
       setPoiData(
@@ -532,7 +290,6 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
       const zoom = map.getZoom()
       const bbox = boundsToBBox()
 
-      // Keep cached icons for opacity fade; only drop data far below fade range
       if (zoom < POI_FADE_OUT_ZOOM) {
         if (poiCache.size > 0) {
           poiCache.clear()
@@ -541,21 +298,16 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
         return
       }
 
-      // Still paint cache while zoomed out (icons fade via style opacity)
       if (poiCache.size > 0) {
         paintCachedPois(bbox)
       }
 
-      if (zoom < POI_FETCH_MIN_ZOOM) {
-        return
-      }
+      if (zoom < POI_FETCH_MIN_ZOOM) return
 
       const currentRequest = ++requestId
 
       try {
-        // Do not abort previous requests — Overpass is slow; aborting caused empty maps
         const data = await fetchPois(bbox)
-
         if (currentRequest !== requestId) return
 
         if (data.features.length > 0) {
@@ -582,6 +334,7 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
       ensureRouteLayers(map)
       void ensurePoiLayers(map).then(() => {
         poisReady = true
+        setMapReady(true)
         void loadPois()
       })
     })
@@ -594,11 +347,8 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
       }
     })
     map.on('mouseleave', POI_ICONS, () => {
-      if (stepRef.current === 'idle') {
-        map.getCanvas().style.cursor = ''
-      } else {
-        map.getCanvas().style.cursor = 'crosshair'
-      }
+      map.getCanvas().style.cursor =
+        stepRef.current === 'idle' ? '' : 'crosshair'
     })
 
     map.on('click', POI_ICONS, (event) => {
@@ -612,7 +362,13 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
 
       if (stepRef.current !== 'idle') {
         event.originalEvent.stopPropagation()
-        placeRoutePoint({ lng: coordinates[0], lat: coordinates[1] })
+        const role = stepRef.current === 'origin' ? 'origin' : 'destination'
+        const props = feature.properties as { name?: string }
+        routeActions.setEndpoint(
+          role,
+          { lng: coordinates[0], lat: coordinates[1] },
+          props.name,
+        )
         return
       }
 
@@ -623,17 +379,13 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
         icon?: string
       }
 
-      const name = props.name ?? 'Unknown'
-      const category = props.icon ?? props.category ?? 'poi'
-      const type = props.type ?? 'unknown'
-
       popup
         .setLngLat(coordinates)
         .setHTML(
           `<div class="cp-popup-body">
-            <p class="cp-popup-kicker">${escapeHtml(category)}</p>
-            <p class="cp-popup-title">${escapeHtml(name)}</p>
-            <p class="cp-popup-meta">${escapeHtml(type.replaceAll('_', ' '))}</p>
+            <p class="cp-popup-kicker">${escapeHtml(props.icon ?? props.category ?? 'poi')}</p>
+            <p class="cp-popup-title">${escapeHtml(props.name ?? 'Unknown')}</p>
+            <p class="cp-popup-meta">${escapeHtml((props.type ?? 'unknown').replaceAll('_', ' '))}</p>
           </div>`,
         )
         .addTo(map)
@@ -641,35 +393,101 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
 
     map.on('click', (event) => {
       if (stepRef.current === 'idle') return
-      // Ignore clicks that hit a POI — handled above
+
       const features = map.queryRenderedFeatures(event.point, {
         layers: map.getLayer(POI_ICONS) ? [POI_ICONS] : [],
       })
       if (features.length > 0) return
 
-      placeRoutePoint({ lng: event.lngLat.lng, lat: event.lngLat.lat })
+      const role = stepRef.current === 'origin' ? 'origin' : 'destination'
+      routeActions.setEndpoint(role, {
+        lng: event.lngLat.lng,
+        lat: event.lngLat.lat,
+      })
     })
 
     mapRef.current = map
 
     return () => {
       window.clearTimeout(debounceTimer)
-      routeAbortRef.current?.abort()
       poiCache.clear()
       popup.remove()
       popupRef.current = null
       searchMarkerRef.current?.remove()
-      searchMarkerRef.current = null
       originMarkerRef.current?.remove()
-      originMarkerRef.current = null
       destinationMarkerRef.current?.remove()
-      destinationMarkerRef.current = null
+      setMapReady(false)
       map.remove()
       mapRef.current = null
     }
-    // placeRoutePoint/clearRoute/calculateRoute close over refs — stable enough for mount-only effect
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Sync route markers + geometry from store
+  useEffect(() => {
+    if (!mapReady) return
+    const map = mapRef.current
+    if (!map?.getSource(ROUTE_SOURCE)) return
+
+    syncMarker(map, originMarkerRef, origin, 'A', '#00f0ff')
+    syncMarker(map, destinationMarkerRef, destination, 'B', '#fcee0a')
+
+    if (routeGeometry) {
+      setRouteData(map, routeToFeatureCollection(routeGeometry))
+    } else {
+      setRouteData(map, EMPTY_ROUTE)
+    }
+  }, [mapReady, origin, destination, routeGeometry])
+
+  // Pick-mode cursor
+  useEffect(() => {
+    if (!mapReady) return
+    const map = mapRef.current
+    if (!map) return
+    map.getCanvas().style.cursor = step === 'idle' ? '' : 'crosshair'
+  }, [mapReady, step])
+
+  // Camera intents from store
+  useEffect(() => {
+    if (!mapReady || !cameraIntent) return
+    const map = mapRef.current
+    if (!map) return
+
+    if (cameraIntent.type === 'flyTo') {
+      const { point, zoom = FOCUS_ZOOM } = cameraIntent
+
+      if (!searchMarkerRef.current) {
+        searchMarkerRef.current = new maplibregl.Marker({ color: '#fcee0a' })
+          .setLngLat([point.lng, point.lat])
+          .addTo(map)
+      } else {
+        searchMarkerRef.current.setLngLat([point.lng, point.lat])
+      }
+
+      map.flyTo({
+        center: [point.lng, point.lat],
+        zoom,
+        essential: true,
+      })
+    }
+
+    if (cameraIntent.type === 'fitBounds') {
+      const bounds = new maplibregl.LngLatBounds()
+      for (const coord of cameraIntent.coordinates) {
+        bounds.extend(coord as [number, number])
+      }
+      suppressPoiReloadRef.current = true
+      map.fitBounds(bounds, {
+        padding: cameraIntent.padding ?? 80,
+        maxZoom: cameraIntent.maxZoom ?? 16,
+        duration: 800,
+      })
+      window.setTimeout(() => {
+        suppressPoiReloadRef.current = false
+      }, 1000)
+    }
+
+    routeActions.cameraIntentCleared()
+  }, [mapReady, cameraIntent])
 
   return (
     <div className="relative h-full w-full">
@@ -680,4 +498,4 @@ export const Map = forwardRef<MapHandle, MapProps>(function Map(
       />
     </div>
   )
-})
+}
