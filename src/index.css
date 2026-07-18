@@ -1,0 +1,28 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-cp-black: #0a0a0a;
+  --color-cp-dark: #121212;
+  --color-cp-panel: #1a1a1a;
+  --color-cp-yellow: #fcee0a;
+  --color-cp-cyan: #00f0ff;
+  --color-cp-magenta: #ff003c;
+  --color-cp-orange: #ff6b00;
+  --color-cp-muted: #8a8a8a;
+
+  --font-display: 'Oxanium', sans-serif;
+  --font-body: 'Rajdhani', sans-serif;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    @apply bg-cp-black font-body text-white antialiased;
+  }
+}
