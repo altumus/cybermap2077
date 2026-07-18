@@ -1,3 +1,5 @@
+import { resolvePoiIcon, type PoiIconId } from './poiIcons'
+
 export type BBox = {
   south: number
   west: number
@@ -10,6 +12,7 @@ export type PoiProperties = {
   name: string
   category: string
   type: string
+  icon: PoiIconId
 }
 
 export type PoiFeature = {
@@ -103,6 +106,7 @@ function toFeature(element: OverpassElement): PoiFeature | null {
       name: tags.name,
       category,
       type,
+      icon: resolvePoiIcon(category, type),
     },
   }
 }

@@ -7,6 +7,7 @@ import {
 } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import { registerPoiIcons } from '../lib/poiIcons'
 import { emptyPois, fetchPois, type PoiFeatureCollection } from '../lib/pois'
 
 /** Free vector style — swap later for a custom cyberpunk theme */
@@ -18,7 +19,7 @@ const FOCUS_ZOOM = 15
 const POI_MIN_ZOOM = 10
 const POI_DEBOUNCE_MS = 500
 const POI_SOURCE = 'pois'
-const POI_CIRCLES = 'pois-circles'
+const POI_ICONS = 'pois-icons'
 const POI_LABELS = 'pois-labels'
 
 export type MapHandle = {
@@ -40,8 +41,10 @@ function setPoiData(map: maplibregl.Map, data: PoiFeatureCollection) {
   source?.setData(data)
 }
 
-function ensurePoiLayers(map: maplibregl.Map) {
+async function ensurePoiLayers(map: maplibregl.Map) {
   if (map.getSource(POI_SOURCE)) return
+
+  await registerPoiIcons(map)
 
   map.addSource(POI_SOURCE, {
     type: 'geojson',
@@ -49,25 +52,24 @@ function ensurePoiLayers(map: maplibregl.Map) {
   })
 
   map.addLayer({
-    id: POI_CIRCLES,
-    type: 'circle',
+    id: POI_ICONS,
+    type: 'symbol',
     source: POI_SOURCE,
-    paint: {
-      'circle-radius': [
+    layout: {
+      'icon-image': ['concat', 'poi-', ['get', 'icon']],
+      'icon-size': [
         'interpolate',
         ['linear'],
         ['zoom'],
         10,
-        3,
+        0.55,
         14,
-        5,
+        0.75,
         18,
-        8,
+        1,
       ],
-      'circle-color': '#00f0ff',
-      'circle-stroke-color': '#fcee0a',
-      'circle-stroke-width': 1.5,
-      'circle-opacity': 0.9,
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
     },
   })
 
@@ -80,9 +82,10 @@ function ensurePoiLayers(map: maplibregl.Map) {
       'text-field': ['get', 'name'],
       'text-font': ['Noto Sans Regular'],
       'text-size': 11,
-      'text-offset': [0, 1.2],
+      'text-offset': [0, 1.6],
       'text-anchor': 'top',
       'text-max-width': 10,
+      'text-optional': true,
     },
     paint: {
       'text-color': '#fcee0a',
@@ -198,20 +201,21 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
     }
 
     map.on('load', () => {
-      ensurePoiLayers(map)
-      schedulePoiLoad()
+      void ensurePoiLayers(map).then(() => {
+        schedulePoiLoad()
+      })
     })
 
     map.on('moveend', schedulePoiLoad)
 
-    map.on('mouseenter', POI_CIRCLES, () => {
+    map.on('mouseenter', POI_ICONS, () => {
       map.getCanvas().style.cursor = 'pointer'
     })
-    map.on('mouseleave', POI_CIRCLES, () => {
+    map.on('mouseleave', POI_ICONS, () => {
       map.getCanvas().style.cursor = ''
     })
 
-    map.on('click', POI_CIRCLES, (event) => {
+    map.on('click', POI_ICONS, (event) => {
       const feature = event.features?.[0]
       if (!feature || feature.geometry.type !== 'Point') return
 
@@ -219,6 +223,7 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
         name?: string
         category?: string
         type?: string
+        icon?: string
       }
 
       const coordinates = feature.geometry.coordinates.slice() as [
@@ -226,7 +231,7 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
         number,
       ]
       const name = props.name ?? 'Unknown'
-      const category = props.category ?? 'poi'
+      const category = props.icon ?? props.category ?? 'poi'
       const type = props.type ?? 'unknown'
 
       popup
