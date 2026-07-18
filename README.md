@@ -63,6 +63,6 @@ npm run lint     # oxlint
 
 ## Notes
 
-- POI requests go through a same-origin proxy (`/api/overpass` → Overpass via Netlify rewrite / Vite proxy) to avoid CORS blocks; public mirrors are used as fallback.
+- POI requests go through a same-origin proxy (`/api/overpass` → Overpass FR via Netlify rewrite / Vite proxy) to avoid CORS; other mirrors are tried if the response is empty or fails.
 - Public OSRM demo ignores profile switching; car/foot go through FOSSGIS `routed-car` / `routed-foot`.
 - POIs load from zoom ≥ 14; earlier zoom fades them out.

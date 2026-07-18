@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 const overpassProxy = {
   '/api/overpass': {
-    target: 'https://overpass.osm.ch',
+    target: 'https://overpass.openstreetmap.fr',
     changeOrigin: true,
     rewrite: () => '/api/interpreter',
   },

@@ -21,11 +21,11 @@ type OverpassResponse = {
 
 /**
  * Same-origin proxy first (Netlify rewrite / Vite dev proxy) to avoid browser CORS.
- * Public mirrors as fallback for preview or when the proxy is unavailable.
+ * Direct mirrors as fallback — skip overpass.osm.ch (often returns empty db).
  */
 const OVERPASS_ENDPOINTS = [
   '/api/overpass',
-  'https://overpass.osm.ch/api/interpreter',
+  'https://overpass.openstreetmap.fr/api/interpreter',
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ]
 
@@ -137,12 +137,16 @@ export async function fetchPois(
 ): Promise<PoiFeatureCollection> {
   const query = buildQuery(bbox)
   let lastError: unknown
+  let emptyResult: PoiFeatureCollection | null = null
 
   for (const endpoint of OVERPASS_ENDPOINTS) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
     try {
-      return await queryEndpoint(endpoint, query, signal)
+      const result = await queryEndpoint(endpoint, query, signal)
+      // Some mirrors return 200 with an empty/stale DB — keep looking.
+      if (result.features.length > 0) return result
+      emptyResult = result
     } catch (error) {
       if (signal?.aborted || (error as Error).name === 'AbortError') {
         throw new DOMException('Aborted', 'AbortError')
@@ -151,6 +155,7 @@ export async function fetchPois(
     }
   }
 
+  if (emptyResult) return emptyResult
   throw lastError instanceof Error ? lastError : new Error('POI fetch failed')
 }
 
