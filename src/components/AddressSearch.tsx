@@ -9,21 +9,45 @@ import { searchAddresses, type GeocodeResult } from '../lib/geocode'
 
 type AddressSearchProps = {
   onSelect: (result: GeocodeResult) => void
+  label?: string
+  placeholder?: string
+  value?: string
+  onValueChange?: (value: string) => void
+  inputId?: string
+  className?: string
 }
 
-export function AddressSearch({ onSelect }: AddressSearchProps) {
+export function AddressSearch({
+  onSelect,
+  label = 'Loc',
+  placeholder = 'Search address...',
+  value,
+  onValueChange,
+  inputId,
+  className = '',
+}: AddressSearchProps) {
   const listId = useId()
+  const generatedId = useId()
+  const fieldId = inputId ?? generatedId
   const rootRef = useRef<HTMLDivElement>(null)
-  const [query, setQuery] = useState('')
+  const userTypingRef = useRef(false)
+  const [internalQuery, setInternalQuery] = useState('')
+  const query = value ?? internalQuery
   const [results, setResults] = useState<GeocodeResult[]>([])
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [activeIndex, setActiveIndex] = useState(-1)
 
+  function setQuery(next: string, fromUser = false) {
+    userTypingRef.current = fromUser
+    if (value === undefined) setInternalQuery(next)
+    onValueChange?.(next)
+  }
+
   useEffect(() => {
     const trimmed = query.trim()
-    if (trimmed.length < 2) {
+    if (trimmed.length < 2 || !userTypingRef.current) {
       setResults([])
       setOpen(false)
       setLoading(false)
@@ -69,7 +93,7 @@ export function AddressSearch({ onSelect }: AddressSearchProps) {
   }, [])
 
   function choose(result: GeocodeResult) {
-    setQuery(result.label)
+    setQuery(result.label, false)
     setOpen(false)
     setResults([])
     onSelect(result)
@@ -96,19 +120,19 @@ export function AddressSearch({ onSelect }: AddressSearchProps) {
   }
 
   return (
-    <div ref={rootRef} className="relative w-full max-w-md">
-      <label className="sr-only" htmlFor="address-search">
-        Search address
+    <div ref={rootRef} className={`relative w-full ${className}`}>
+      <label className="sr-only" htmlFor={fieldId}>
+        {placeholder}
       </label>
       <div className="flex items-center border border-cp-yellow/40 bg-cp-panel/90 backdrop-blur-sm">
         <span className="px-3 font-display text-[10px] tracking-[0.25em] text-cp-yellow uppercase">
-          Loc
+          {label}
         </span>
         <input
-          id="address-search"
+          id={fieldId}
           type="search"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => setQuery(event.target.value, true)}
           onFocus={() => {
             if (results.length > 0 || error) setOpen(true)
           }}
@@ -120,7 +144,7 @@ export function AddressSearch({ onSelect }: AddressSearchProps) {
           aria-activedescendant={
             activeIndex >= 0 ? `${listId}-option-${activeIndex}` : undefined
           }
-          placeholder="Search address..."
+          placeholder={placeholder}
           autoComplete="off"
           className="w-full bg-transparent py-2.5 pr-3 font-body text-sm text-white outline-none placeholder:text-cp-muted"
         />
@@ -135,7 +159,7 @@ export function AddressSearch({ onSelect }: AddressSearchProps) {
         <ul
           id={listId}
           role="listbox"
-          className="absolute inset-x-0 top-full z-20 mt-1 max-h-64 overflow-auto border border-cp-cyan/30 bg-cp-panel/95 backdrop-blur-sm"
+          className="absolute inset-x-0 top-full z-30 mt-1 max-h-56 overflow-auto border border-cp-cyan/30 bg-cp-panel/95 backdrop-blur-sm"
         >
           {error && (
             <li className="px-3 py-2.5 text-sm text-cp-magenta">{error}</li>

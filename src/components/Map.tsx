@@ -4,11 +4,21 @@ import {
   useImperativeHandle,
   useRef,
   useState,
+  type MutableRefObject,
 } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { registerPoiIcons } from '../lib/poiIcons'
 import { emptyPois, fetchPois, type PoiFeatureCollection } from '../lib/pois'
+import {
+  EMPTY_ROUTE,
+  fetchRoute,
+  formatDistance,
+  formatDuration,
+  routeToFeatureCollection,
+  type LatLng,
+  type RouteProfile,
+} from '../lib/routing'
 
 /** Free vector style — swap later for a custom cyberpunk theme */
 const MAP_STYLE = 'https://tiles.openfreemap.org/styles/dark'
@@ -21,9 +31,34 @@ const POI_DEBOUNCE_MS = 700
 const POI_SOURCE = 'pois'
 const POI_ICONS = 'pois-icons'
 const POI_LABELS = 'pois-labels'
+const ROUTE_SOURCE = 'route'
+const ROUTE_LAYER = 'route-line'
+const ROUTE_GLOW_LAYER = 'route-glow'
+
+export type RoutePickStep = 'idle' | 'origin' | 'destination'
+export type RouteUiStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 export type MapHandle = {
   flyTo: (lng: number, lat: number, zoom?: number) => void
+  beginRoutePick: () => void
+  clearRoute: () => void
+  setRouteProfile: (profile: RouteProfile) => void
+  setRouteEndpoint: (
+    role: 'origin' | 'destination',
+    point: LatLng,
+    label?: string,
+  ) => void
+}
+
+type MapProps = {
+  onRouteStateChange?: (state: {
+    step: RoutePickStep
+    status: RouteUiStatus
+    profile: RouteProfile
+    summary: string | null
+    originLabel: string | null
+    destinationLabel: string | null
+  }) => void
 }
 
 type PoiStatus = 'idle' | 'loading' | 'zoom-in' | 'error'
@@ -39,6 +74,35 @@ function escapeHtml(value: string): string {
 function setPoiData(map: maplibregl.Map, data: PoiFeatureCollection) {
   const source = map.getSource(POI_SOURCE) as maplibregl.GeoJSONSource | undefined
   source?.setData(data)
+}
+
+function setRouteData(
+  map: maplibregl.Map,
+  data: ReturnType<typeof routeToFeatureCollection> | typeof EMPTY_ROUTE,
+) {
+  const source = map.getSource(ROUTE_SOURCE) as maplibregl.GeoJSONSource | undefined
+  source?.setData(data)
+}
+
+function createRouteMarkerElement(label: string, color: string): HTMLDivElement {
+  const el = document.createElement('div')
+  el.className = 'cp-route-marker'
+  el.style.cssText = `
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #121212;
+    border: 2px solid ${color};
+    color: ${color};
+    font-family: Oxanium, sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  `
+  el.textContent = label
+  return el
 }
 
 async function ensurePoiLayers(map: maplibregl.Map) {
@@ -62,11 +126,11 @@ async function ensurePoiLayers(map: maplibregl.Map) {
         ['linear'],
         ['zoom'],
         10,
-        0.55,
+        0.9,
         14,
-        0.75,
+        1.15,
         18,
-        1,
+        1.4,
       ],
       'icon-allow-overlap': true,
       'icon-ignore-placement': true,
@@ -82,7 +146,7 @@ async function ensurePoiLayers(map: maplibregl.Map) {
       'text-field': ['get', 'name'],
       'text-font': ['Noto Sans Regular'],
       'text-size': 11,
-      'text-offset': [0, 1.6],
+      'text-offset': [0, 2],
       'text-anchor': 'top',
       'text-max-width': 10,
       'text-optional': true,
@@ -95,25 +159,237 @@ async function ensurePoiLayers(map: maplibregl.Map) {
   })
 }
 
-export const Map = forwardRef<MapHandle>(function Map(_, ref) {
+function ensureRouteLayers(map: maplibregl.Map) {
+  if (map.getSource(ROUTE_SOURCE)) return
+
+  map.addSource(ROUTE_SOURCE, {
+    type: 'geojson',
+    data: EMPTY_ROUTE,
+  })
+
+  map.addLayer({
+    id: ROUTE_GLOW_LAYER,
+    type: 'line',
+    source: ROUTE_SOURCE,
+    layout: {
+      'line-join': 'round',
+      'line-cap': 'round',
+    },
+    paint: {
+      'line-color': '#00f0ff',
+      'line-width': 10,
+      'line-opacity': 0.25,
+    },
+  })
+
+  map.addLayer({
+    id: ROUTE_LAYER,
+    type: 'line',
+    source: ROUTE_SOURCE,
+    layout: {
+      'line-join': 'round',
+      'line-cap': 'round',
+    },
+    paint: {
+      'line-color': '#fcee0a',
+      'line-width': 4,
+      'line-opacity': 0.95,
+    },
+  })
+}
+
+export const Map = forwardRef<MapHandle, MapProps>(function Map(
+  { onRouteStateChange },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
-  const markerRef = useRef<maplibregl.Marker | null>(null)
+  const searchMarkerRef = useRef<maplibregl.Marker | null>(null)
+  const originMarkerRef = useRef<maplibregl.Marker | null>(null)
+  const destinationMarkerRef = useRef<maplibregl.Marker | null>(null)
   const popupRef = useRef<maplibregl.Popup | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const routeAbortRef = useRef<AbortController | null>(null)
+
+  const stepRef = useRef<RoutePickStep>('idle')
+  const statusRef = useRef<RouteUiStatus>('idle')
+  const profileRef = useRef<RouteProfile>('driving')
+  const originRef = useRef<LatLng | null>(null)
+  const destinationRef = useRef<LatLng | null>(null)
+  const originLabelRef = useRef<string | null>(null)
+  const destinationLabelRef = useRef<string | null>(null)
+  const summaryRef = useRef<string | null>(null)
+  const onRouteStateChangeRef = useRef(onRouteStateChange)
+  onRouteStateChangeRef.current = onRouteStateChange
+
   const [poiStatus, setPoiStatus] = useState<PoiStatus>('zoom-in')
+
+  function emitRouteState() {
+    onRouteStateChangeRef.current?.({
+      step: stepRef.current,
+      status: statusRef.current,
+      profile: profileRef.current,
+      summary: summaryRef.current,
+      originLabel: originLabelRef.current,
+      destinationLabel: destinationLabelRef.current,
+    })
+  }
+
+  function formatPinLabel(point: LatLng): string {
+    return `${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}`
+  }
+
+  function upsertMarker(
+    markerRef: MutableRefObject<maplibregl.Marker | null>,
+    point: LatLng,
+    label: string,
+    color: string,
+  ) {
+    const map = mapRef.current
+    if (!map) return
+
+    if (!markerRef.current) {
+      markerRef.current = new maplibregl.Marker({
+        element: createRouteMarkerElement(label, color),
+        anchor: 'center',
+      })
+        .setLngLat([point.lng, point.lat])
+        .addTo(map)
+    } else {
+      markerRef.current.setLngLat([point.lng, point.lat])
+    }
+  }
+
+  async function calculateRoute() {
+    const map = mapRef.current
+    const origin = originRef.current
+    const destination = destinationRef.current
+    if (!map || !origin || !destination) return
+
+    routeAbortRef.current?.abort()
+    const controller = new AbortController()
+    routeAbortRef.current = controller
+
+    statusRef.current = 'loading'
+    summaryRef.current = null
+    emitRouteState()
+
+    try {
+      const route = await fetchRoute(
+        origin,
+        destination,
+        profileRef.current,
+        controller.signal,
+      )
+
+      if (controller.signal.aborted) return
+
+      setRouteData(map, routeToFeatureCollection(route.geometry))
+      const modeLabel = profileRef.current === 'foot' ? 'Walk' : 'Drive'
+      summaryRef.current = `${modeLabel} · ${formatDistance(route.distanceMeters)} · ${formatDuration(route.durationSeconds)}`
+      statusRef.current = 'ready'
+      stepRef.current = 'idle'
+      emitRouteState()
+
+      const bounds = new maplibregl.LngLatBounds(
+        [origin.lng, origin.lat],
+        [destination.lng, destination.lat],
+      )
+      for (const coord of route.geometry.coordinates) {
+        bounds.extend(coord as [number, number])
+      }
+      map.fitBounds(bounds, { padding: 80, maxZoom: 16, duration: 800 })
+    } catch (error) {
+      if (
+        controller.signal.aborted ||
+        (error as Error).name === 'AbortError'
+      ) {
+        return
+      }
+      statusRef.current = 'error'
+      summaryRef.current = null
+      emitRouteState()
+    }
+  }
+
+  function setRouteEndpoint(
+    role: 'origin' | 'destination',
+    point: LatLng,
+    label?: string,
+  ) {
+    const map = mapRef.current
+    if (!map) return
+
+    const resolvedLabel = label?.trim() || formatPinLabel(point)
+
+    if (role === 'origin') {
+      originRef.current = point
+      originLabelRef.current = resolvedLabel
+      upsertMarker(originMarkerRef, point, 'A', '#00f0ff')
+    } else {
+      destinationRef.current = point
+      destinationLabelRef.current = resolvedLabel
+      upsertMarker(destinationMarkerRef, point, 'B', '#fcee0a')
+    }
+
+    summaryRef.current = null
+    map.getCanvas().style.removeProperty('cursor')
+
+    if (originRef.current && destinationRef.current) {
+      stepRef.current = 'idle'
+      void calculateRoute()
+      return
+    }
+
+    stepRef.current = originRef.current ? 'destination' : 'origin'
+    statusRef.current = 'idle'
+    emitRouteState()
+  }
+
+  function placeRoutePoint(point: LatLng) {
+    if (stepRef.current === 'idle') return
+
+    if (stepRef.current === 'origin') {
+      setRouteEndpoint('origin', point)
+      if (!destinationRef.current) {
+        mapRef.current?.getCanvas().style.setProperty('cursor', 'crosshair')
+      }
+      return
+    }
+
+    setRouteEndpoint('destination', point)
+  }
+
+  function clearRoute() {
+    const map = mapRef.current
+    routeAbortRef.current?.abort()
+    originRef.current = null
+    destinationRef.current = null
+    originLabelRef.current = null
+    destinationLabelRef.current = null
+    stepRef.current = 'idle'
+    statusRef.current = 'idle'
+    summaryRef.current = null
+    originMarkerRef.current?.remove()
+    originMarkerRef.current = null
+    destinationMarkerRef.current?.remove()
+    destinationMarkerRef.current = null
+    if (map) setRouteData(map, EMPTY_ROUTE)
+    map?.getCanvas().style.removeProperty('cursor')
+    emitRouteState()
+  }
 
   useImperativeHandle(ref, () => ({
     flyTo(lng, lat, zoom = FOCUS_ZOOM) {
       const map = mapRef.current
       if (!map) return
 
-      if (!markerRef.current) {
-        markerRef.current = new maplibregl.Marker({ color: '#fcee0a' })
+      if (!searchMarkerRef.current) {
+        searchMarkerRef.current = new maplibregl.Marker({ color: '#fcee0a' })
           .setLngLat([lng, lat])
           .addTo(map)
       } else {
-        markerRef.current.setLngLat([lng, lat])
+        searchMarkerRef.current.setLngLat([lng, lat])
       }
 
       map.flyTo({
@@ -121,6 +397,26 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
         zoom,
         essential: true,
       })
+    },
+    beginRoutePick() {
+      clearRoute()
+      stepRef.current = 'origin'
+      statusRef.current = 'idle'
+      emitRouteState()
+      mapRef.current?.getCanvas().style.setProperty('cursor', 'crosshair')
+    },
+    clearRoute() {
+      clearRoute()
+    },
+    setRouteProfile(profile) {
+      profileRef.current = profile
+      emitRouteState()
+      if (originRef.current && destinationRef.current) {
+        void calculateRoute()
+      }
+    },
+    setRouteEndpoint(role, point, label) {
+      setRouteEndpoint(role, point, label)
     },
   }))
 
@@ -185,7 +481,6 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
           controller.signal,
         )
 
-        // Ignore stale responses after a newer pan/zoom request
         if (currentRequest !== requestId || controller.signal.aborted) return
         setPoiData(map, data)
         setPoiStatus('idle')
@@ -197,7 +492,6 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
         ) {
           return
         }
-        // Keep previous icons on transient Overpass failures
         setPoiStatus('error')
       }
     }
@@ -210,6 +504,7 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
     }
 
     map.on('load', () => {
+      ensureRouteLayers(map)
       void ensurePoiLayers(map).then(() => {
         schedulePoiLoad()
       })
@@ -218,15 +513,32 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
     map.on('moveend', schedulePoiLoad)
 
     map.on('mouseenter', POI_ICONS, () => {
-      map.getCanvas().style.cursor = 'pointer'
+      if (stepRef.current === 'idle') {
+        map.getCanvas().style.cursor = 'pointer'
+      }
     })
     map.on('mouseleave', POI_ICONS, () => {
-      map.getCanvas().style.cursor = ''
+      if (stepRef.current === 'idle') {
+        map.getCanvas().style.cursor = ''
+      } else {
+        map.getCanvas().style.cursor = 'crosshair'
+      }
     })
 
     map.on('click', POI_ICONS, (event) => {
       const feature = event.features?.[0]
       if (!feature || feature.geometry.type !== 'Point') return
+
+      const coordinates = feature.geometry.coordinates.slice() as [
+        number,
+        number,
+      ]
+
+      if (stepRef.current !== 'idle') {
+        event.originalEvent.stopPropagation()
+        placeRoutePoint({ lng: coordinates[0], lat: coordinates[1] })
+        return
+      }
 
       const props = feature.properties as {
         name?: string
@@ -235,10 +547,6 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
         icon?: string
       }
 
-      const coordinates = feature.geometry.coordinates.slice() as [
-        number,
-        number,
-      ]
       const name = props.name ?? 'Unknown'
       const category = props.icon ?? props.category ?? 'poi'
       const type = props.type ?? 'unknown'
@@ -255,18 +563,36 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
         .addTo(map)
     })
 
+    map.on('click', (event) => {
+      if (stepRef.current === 'idle') return
+      // Ignore clicks that hit a POI — handled above
+      const features = map.queryRenderedFeatures(event.point, {
+        layers: map.getLayer(POI_ICONS) ? [POI_ICONS] : [],
+      })
+      if (features.length > 0) return
+
+      placeRoutePoint({ lng: event.lngLat.lng, lat: event.lngLat.lat })
+    })
+
     mapRef.current = map
 
     return () => {
       window.clearTimeout(debounceTimer)
       abortRef.current?.abort()
+      routeAbortRef.current?.abort()
       popup.remove()
       popupRef.current = null
-      markerRef.current?.remove()
-      markerRef.current = null
+      searchMarkerRef.current?.remove()
+      searchMarkerRef.current = null
+      originMarkerRef.current?.remove()
+      originMarkerRef.current = null
+      destinationMarkerRef.current?.remove()
+      destinationMarkerRef.current = null
       map.remove()
       mapRef.current = null
     }
+    // placeRoutePoint/clearRoute/calculateRoute close over refs — stable enough for mount-only effect
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const statusLabel =
