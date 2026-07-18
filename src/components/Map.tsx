@@ -20,8 +20,8 @@ import {
   type RouteProfile,
 } from '../lib/routing'
 
-/** Free vector style — swap later for a custom cyberpunk theme */
-const MAP_STYLE = 'https://tiles.openfreemap.org/styles/dark'
+/** Local cyberpunk theme — tiles/fonts still from OpenFreeMap */
+const MAP_STYLE = '/styles/cyberpunk.json'
 
 const DEFAULT_CENTER: [number, number] = [-118.2437, 34.0522]
 const DEFAULT_ZOOM = 11
