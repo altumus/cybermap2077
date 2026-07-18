@@ -19,9 +19,9 @@ export function LocateButton({ onLocate }: LocateButtonProps) {
       const position = await locateUser()
       setStatus('idle')
       onLocate(position.lng, position.lat)
-    } catch (error) {
+    } catch {
       setStatus('error')
-      setErrorMessage(locateErrorMessage(error))
+      setErrorMessage(locateErrorMessage())
       window.setTimeout(() => {
         setStatus('idle')
         setErrorMessage(null)
