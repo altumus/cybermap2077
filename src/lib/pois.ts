@@ -29,7 +29,7 @@ const POI_KEYS = [
   'office',
   'craft',
   'healthcare',
-] as const
+]
 
 const EMPTY: PoiFeatureCollection = {
   type: 'FeatureCollection',

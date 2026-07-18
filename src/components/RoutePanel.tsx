@@ -49,9 +49,8 @@ export function RoutePanel() {
           </p>
           {!expanded && collapsedHint && (
             <span
-              className={`truncate font-body text-xs ${
-                status === 'error' ? 'text-cp-magenta' : 'text-cp-muted'
-              }`}
+              className={`truncate font-body text-xs ${status === 'error' ? 'text-cp-magenta' : 'text-cp-muted'
+                }`}
             >
               {collapsedHint}
             </span>
@@ -71,16 +70,15 @@ export function RoutePanel() {
       {expanded && (
         <div className="flex flex-col gap-2 border-t border-cp-cyan/20 px-3 pt-2 pb-3">
           <div className="flex justify-end gap-1">
-            {(['driving', 'foot'] as const).map((option: RouteProfile) => (
+            {(['driving', 'foot']).map((option: RouteProfile) => (
               <button
                 key={option}
                 type="button"
                 onClick={() => routeActions.setProfile(option)}
-                className={`px-2 py-0.5 font-display text-[10px] tracking-wider uppercase ${
-                  profile === option
+                className={`px-2 py-0.5 font-display text-[10px] tracking-wider uppercase ${profile === option
                     ? 'bg-cp-yellow/20 text-cp-yellow'
                     : 'text-cp-muted hover:text-white'
-                }`}
+                  }`}
               >
                 {option === 'driving' ? 'Drive' : 'Walk'}
               </button>
@@ -128,9 +126,8 @@ export function RoutePanel() {
 
           {hint && (
             <p
-              className={`font-body text-xs ${
-                status === 'error' ? 'text-cp-magenta' : 'text-cp-muted'
-              }`}
+              className={`font-body text-xs ${status === 'error' ? 'text-cp-magenta' : 'text-cp-muted'
+                }`}
             >
               {hint}
             </p>
