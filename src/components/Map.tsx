@@ -257,6 +257,7 @@ export function Map() {
     let debounceTimer: number | undefined
     let requestId = 0
     let poisReady = false
+    let poisOnMap = false
     const poiCache = poiCacheRef.current
 
     function boundsToBBox(): BBox {
@@ -281,22 +282,33 @@ export function Map() {
           east: bbox.east + lngPad,
         }),
       )
+      poisOnMap = true
+    }
+
+    /** Drop POIs immediately on zoom-out; invalidate in-flight Overpass responses. */
+    function clearPois() {
+      requestId += 1
+      poiCache.clear()
+      if (poisOnMap) {
+        setPoiData(map, emptyPois())
+        poisOnMap = false
+      }
+    }
+
+    function hidePoisIfZoomedOut(): boolean {
+      if (map.getZoom() >= POI_FADE_OUT_ZOOM) return false
+      window.clearTimeout(debounceTimer)
+      clearPois()
+      return true
     }
 
     async function loadPois() {
       if (!poisReady || !map.getSource(POI_SOURCE)) return
       if (suppressPoiReloadRef.current) return
+      if (hidePoisIfZoomedOut()) return
 
       const zoom = map.getZoom()
       const bbox = boundsToBBox()
-
-      if (zoom < POI_FADE_OUT_ZOOM) {
-        if (poiCache.size > 0) {
-          poiCache.clear()
-          setPoiData(map, emptyPois())
-        }
-        return
-      }
 
       if (poiCache.size > 0) {
         paintCachedPois(bbox)
@@ -309,21 +321,30 @@ export function Map() {
       try {
         const data = await fetchPois(bbox)
         if (currentRequest !== requestId) return
+        if (map.getZoom() < POI_FADE_OUT_ZOOM) {
+          clearPois()
+          return
+        }
 
         if (data.features.length > 0) {
           poiCache.merge(data)
           poiCache.prune(bbox, 2)
         }
 
-        paintCachedPois(bbox)
+        paintCachedPois(boundsToBBox())
       } catch {
         if (currentRequest !== requestId) return
-        paintCachedPois(bbox)
+        if (map.getZoom() < POI_FADE_OUT_ZOOM) {
+          clearPois()
+          return
+        }
+        paintCachedPois(boundsToBBox())
       }
     }
 
     function schedulePoiLoad() {
       if (!poisReady || suppressPoiReloadRef.current) return
+      if (hidePoisIfZoomedOut()) return
       window.clearTimeout(debounceTimer)
       debounceTimer = window.setTimeout(() => {
         void loadPois()
@@ -339,6 +360,8 @@ export function Map() {
       })
     })
 
+    // Clear during the gesture so icons don't linger until moveend debounce
+    map.on('zoom', hidePoisIfZoomedOut)
     map.on('moveend', schedulePoiLoad)
 
     map.on('mouseenter', POI_ICONS, () => {
