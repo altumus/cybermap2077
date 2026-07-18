@@ -17,7 +17,7 @@ const DEFAULT_CENTER: [number, number] = [-118.2437, 34.0522]
 const DEFAULT_ZOOM = 11
 const FOCUS_ZOOM = 15
 const POI_MIN_ZOOM = 10
-const POI_DEBOUNCE_MS = 500
+const POI_DEBOUNCE_MS = 700
 const POI_SOURCE = 'pois'
 const POI_ICONS = 'pois-icons'
 const POI_LABELS = 'pois-labels'
@@ -154,6 +154,7 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
     popupRef.current = popup
 
     let debounceTimer: number | undefined
+    let requestId = 0
 
     async function loadPois() {
       if (!map.getSource(POI_SOURCE)) return
@@ -165,6 +166,7 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
         return
       }
 
+      const currentRequest = ++requestId
       abortRef.current?.abort()
       const controller = new AbortController()
       abortRef.current = controller
@@ -183,12 +185,19 @@ export const Map = forwardRef<MapHandle>(function Map(_, ref) {
           controller.signal,
         )
 
-        if (controller.signal.aborted) return
+        // Ignore stale responses after a newer pan/zoom request
+        if (currentRequest !== requestId || controller.signal.aborted) return
         setPoiData(map, data)
         setPoiStatus('idle')
       } catch (error) {
-        if ((error as Error).name === 'AbortError') return
-        setPoiData(map, emptyPois())
+        if (
+          currentRequest !== requestId ||
+          controller.signal.aborted ||
+          (error as Error).name === 'AbortError'
+        ) {
+          return
+        }
+        // Keep previous icons on transient Overpass failures
         setPoiStatus('error')
       }
     }

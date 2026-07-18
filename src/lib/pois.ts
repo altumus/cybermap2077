@@ -163,7 +163,9 @@ export async function fetchPois(
     try {
       return await queryEndpoint(endpoint, query, signal)
     } catch (error) {
-      if ((error as Error).name === 'AbortError') throw error
+      if (signal?.aborted || (error as Error).name === 'AbortError') {
+        throw new DOMException('Aborted', 'AbortError')
+      }
       lastError = error
     }
   }
