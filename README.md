@@ -2,6 +2,8 @@
 
 Interactive map styled after Cyberpunk 2077: address search, IP locate, Overpass POIs, and OSRM routing.
 
+**Live demo:** [cybermap2077.netlify.app](https://cybermap2077.netlify.app)
+
 ## Stack
 
 - React 19 + TypeScript
