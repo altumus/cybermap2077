@@ -26,3 +26,59 @@
     @apply bg-cp-black font-body text-white antialiased;
   }
 }
+
+/* MapLibre popup — cyberpunk theme */
+.cp-popup .maplibregl-popup-content {
+  padding: 0;
+  background: rgb(26 26 26 / 0.95);
+  border: 1px solid rgb(0 240 255 / 0.35);
+  border-radius: 0;
+  box-shadow: none;
+  color: #fff;
+  font-family: var(--font-body);
+}
+
+.cp-popup .maplibregl-popup-tip {
+  border-top-color: rgb(0 240 255 / 0.35);
+}
+
+.cp-popup .maplibregl-popup-close-button {
+  color: var(--color-cp-yellow);
+  font-size: 18px;
+  padding: 0 6px;
+  right: 0;
+  top: 0;
+}
+
+.cp-popup .maplibregl-popup-close-button:hover {
+  background: transparent;
+  color: var(--color-cp-cyan);
+}
+
+.cp-popup-body {
+  padding: 12px 28px 12px 12px;
+}
+
+.cp-popup-kicker {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--color-cp-cyan);
+}
+
+.cp-popup-title {
+  margin: 4px 0 0;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-cp-yellow);
+}
+
+.cp-popup-meta {
+  margin: 4px 0 0;
+  font-size: 12px;
+  text-transform: capitalize;
+  color: var(--color-cp-muted);
+}
