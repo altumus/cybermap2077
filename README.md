@@ -63,6 +63,6 @@ npm run lint     # oxlint
 
 ## Notes
 
-- Overpass uses the FR mirror (`overpass.openstreetmap.fr`); the main `overpass-api.de` endpoint may reject browser requests.
+- POI requests go through a same-origin proxy (`/api/overpass` → Overpass via Netlify rewrite / Vite proxy) to avoid CORS blocks; public mirrors are used as fallback.
 - Public OSRM demo ignores profile switching; car/foot go through FOSSGIS `routed-car` / `routed-foot`.
 - POIs load from zoom ≥ 14; earlier zoom fades them out.

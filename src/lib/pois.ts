@@ -19,7 +19,15 @@ type OverpassResponse = {
   elements?: OverpassElement[]
 }
 
-const OVERPASS_URL = 'https://overpass.openstreetmap.fr/api/interpreter'
+/**
+ * Same-origin proxy first (Netlify rewrite / Vite dev proxy) to avoid browser CORS.
+ * Public mirrors as fallback for preview or when the proxy is unavailable.
+ */
+const OVERPASS_ENDPOINTS = [
+  '/api/overpass',
+  'https://overpass.osm.ch/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+]
 
 const POI_KEYS = [
   'amenity',
@@ -101,16 +109,17 @@ function toCollection(data: OverpassResponse): PoiFeatureCollection {
   }
 }
 
-export async function fetchPois(
-  bbox: BBox,
+async function queryEndpoint(
+  endpoint: string,
+  query: string,
   signal?: AbortSignal,
 ): Promise<PoiFeatureCollection> {
-  const response = await fetch(OVERPASS_URL, {
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       Accept: 'application/json',
     },
-    body: new URLSearchParams({ data: buildQuery(bbox) }),
+    body: new URLSearchParams({ data: query }),
     signal,
   })
 
@@ -120,6 +129,29 @@ export async function fetchPois(
 
   const data = (await response.json()) as OverpassResponse
   return toCollection(data)
+}
+
+export async function fetchPois(
+  bbox: BBox,
+  signal?: AbortSignal,
+): Promise<PoiFeatureCollection> {
+  const query = buildQuery(bbox)
+  let lastError: unknown
+
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+
+    try {
+      return await queryEndpoint(endpoint, query, signal)
+    } catch (error) {
+      if (signal?.aborted || (error as Error).name === 'AbortError') {
+        throw new DOMException('Aborted', 'AbortError')
+      }
+      lastError = error
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('POI fetch failed')
 }
 
 export function emptyPois(): PoiFeatureCollection {
